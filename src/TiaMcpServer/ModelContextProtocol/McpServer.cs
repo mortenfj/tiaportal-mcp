@@ -875,16 +875,40 @@ namespace TiaMcpServer.ModelContextProtocol
 
         [McpServerTool(Name = "ExportBlock"), Description("Export a block from plc software to file")]
         public static ResponseExportBlock ExportBlock(
+            IProgress<ProgressNotificationValue> progress,
             [Description("softwarePath: defines the path in the project structure to the plc software")] string softwarePath,
             [Description("blockPath: full path to the block in the project structure, e.g. 'Group/Subgroup/Name' (single names are ambiguous)")] string blockPath,
             [Description("exportPath: defines the path where to export the block")] string exportPath,
             [Description("preservePath: preserves the path/structure of the plc software")] bool preservePath = false)
         {
+            // Progress reports become `notifications/progress` only when the client included a
+            // progressToken in the request _meta. Without a token the SDK hands us a no-op
+            // IProgress, so these calls are always safe.
+            progress.Report(new ProgressNotificationValue
+            {
+                Progress = 10,
+                Total = 100,
+                Message = $"Starting export of block '{blockPath}'..."
+            });
+
             try
             {
+                progress.Report(new ProgressNotificationValue
+                {
+                    Progress = 50,
+                    Total = 100,
+                    Message = "Compiling and extracting XML from TIA Portal..."
+                });
+
                 var block = Portal.ExportBlock(softwarePath, blockPath, exportPath, preservePath);
                 if (block != null)
                 {
+                    progress.Report(new ProgressNotificationValue
+                    {
+                        Progress = 100,
+                        Total = 100,
+                        Message = $"Export complete: '{blockPath}' -> '{exportPath}'"
+                    });
                     return new ResponseExportBlock
                     {
                         Message = $"Block exported from '{blockPath}' to '{exportPath}'",
