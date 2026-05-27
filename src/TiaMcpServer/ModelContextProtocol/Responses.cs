@@ -107,6 +107,10 @@ namespace TiaMcpServer.ModelContextProtocol
     {
     }
 
+    public class ResponseMultiuserStatus : ResponseMessage
+    {
+    }
+
     public class ResponseTree : ResponseMessage
     {
         public string? Tree { get; set; }

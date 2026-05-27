@@ -583,6 +583,119 @@ namespace TiaMcpServer.Siemens
             }
         }
 
+        // Read-only snapshot of the open local session's sync state against the Project Server.
+        // V20 Openness has no Update/Refresh/Sync API; the Watchdog uses this to decide whether to
+        // skip a stale project and alert a human instead of guessing.
+        public MultiuserStatus GetMultiuserStatus()
+        {
+            _logger?.LogInformation("Getting multiuser status...");
+
+            try
+            {
+                if (IsPortalNull())
+                {
+                    throw new PortalException(PortalErrorCode.InvalidState, "Not attached to TIA Portal");
+                }
+
+                if (IsSessionNull())
+                {
+                    throw new PortalException(PortalErrorCode.InvalidState,
+                        "No local session is open. GetMultiuserStatus is only valid for .alsXX local sessions.");
+                }
+
+                var session = _session!;
+
+                bool isUpToDate;
+                try
+                {
+                    isUpToDate = session.IsUptoDate();
+                }
+                catch (MultiuserException mex)
+                {
+                    throw new PortalException(PortalErrorCode.MultiuserFailed,
+                        "Failed to read LocalSession.IsUptoDate (Project Server may be unreachable)", null, mex);
+                }
+
+                var status = new MultiuserStatus
+                {
+                    IsUpToDate = isUpToDate,
+                    ProjectName = session.Project?.Name
+                };
+
+                // Best-effort attribute lookups; sessions may not surface every attribute name.
+                try { status.SessionName = session.GetAttribute("Name") as string; } catch { }
+                try { status.LocalSessionPath = session.GetAttribute("Path") as string; } catch { }
+
+                // Best-effort lock state lookup -- walks ProjectServers to find the matching
+                // ServerProjectInfo. Degrades gracefully (LockLookupAvailable=false) if the
+                // server is unreachable, the project can't be correlated, or any sub-call throws.
+                TryFillLockState(status);
+
+                return status;
+            }
+            catch (Exception ex)
+            {
+                var pex = ex as PortalException
+                    ?? new PortalException(PortalErrorCode.MultiuserFailed, "Failed to get multiuser status", null, ex);
+                _logger?.LogError(pex, "GetMultiuserStatus failed");
+                throw pex;
+            }
+        }
+
+        private void TryFillLockState(MultiuserStatus status)
+        {
+            if (status.ProjectName == null) return;
+
+            try
+            {
+                if (_portal?.ProjectServers == null) return;
+
+                foreach (var server in _portal.ProjectServers)
+                {
+                    ServerProjectInfo? matchingProject = null;
+                    try
+                    {
+                        matchingProject = server.GetServerProjects()
+                            ?.FirstOrDefault(sp =>
+                            {
+                                try { return string.Equals(sp.GetAttribute("Name") as string, status.ProjectName, StringComparison.Ordinal); }
+                                catch { return false; }
+                            });
+                    }
+                    catch (MultiuserException mex)
+                    {
+                        _logger?.LogWarning(mex, "Could not enumerate server projects on {Server} (skipping)", server.ServerName);
+                        continue;
+                    }
+
+                    if (matchingProject == null) continue;
+
+                    try
+                    {
+                        var provider = server.GetLockStateProvider(matchingProject);
+                        if (provider == null) return;
+
+                        status.IsProjectLocked = provider.IsProjectLocked();
+                        if (status.IsProjectLocked == true)
+                        {
+                            try { status.LockOwner = provider.GetLockOwner(); } catch { }
+                        }
+                        status.LockLookupAvailable = true;
+                        return;
+                    }
+                    catch (MultiuserException mex)
+                    {
+                        _logger?.LogWarning(mex, "LockStateProvider lookup failed for {Project}", status.ProjectName);
+                        return;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Best-effort lock-state lookup failed");
+            }
+        }
+
         #endregion
 
         #region devices

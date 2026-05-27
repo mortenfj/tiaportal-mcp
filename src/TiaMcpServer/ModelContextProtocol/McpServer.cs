@@ -503,6 +503,74 @@ namespace TiaMcpServer.ModelContextProtocol
             }
         }
 
+        [McpServerTool(Name = "GetMultiuserStatus"), Description(
+            "Inspect the currently-open local session's sync state against the Project Server. " +
+            "Read-only. V20 Openness does not expose an automated update -- the Watchdog uses this " +
+            "to decide whether to proceed or skip-and-alert when the session is stale or the project is locked.")]
+        public static ResponseMultiuserStatus GetMultiuserStatus()
+        {
+            try
+            {
+                var status = Portal.GetMultiuserStatus();
+
+                var meta = new JsonObject
+                {
+                    ["timestamp"] = DateTime.Now,
+                    ["success"] = true,
+                    ["isLocalSession"] = true,
+                    ["isUpToDate"] = status.IsUpToDate,
+                    ["projectName"] = status.ProjectName,
+                    ["sessionName"] = status.SessionName,
+                    ["localSessionPath"] = status.LocalSessionPath,
+                    ["lockLookupAvailable"] = status.LockLookupAvailable,
+                    ["isProjectLocked"] = status.IsProjectLocked,
+                    ["lockOwner"] = status.LockOwner
+                };
+
+                string msg;
+                if (!status.IsUpToDate)
+                {
+                    msg = $"Local session '{status.SessionName ?? status.ProjectName}' is STALE -- server has newer changes. Watchdog should skip and alert.";
+                }
+                else if (status.LockLookupAvailable && status.IsProjectLocked == true)
+                {
+                    msg = $"Local session '{status.SessionName ?? status.ProjectName}' is up-to-date, but project is LOCKED by '{status.LockOwner ?? "unknown"}'.";
+                }
+                else
+                {
+                    msg = $"Local session '{status.SessionName ?? status.ProjectName}' is up-to-date.";
+                }
+
+                return new ResponseMultiuserStatus { Message = msg, Meta = meta };
+            }
+            catch (TiaMcpServer.Siemens.PortalException pex)
+            {
+                switch (pex.Code)
+                {
+                    case TiaMcpServer.Siemens.PortalErrorCode.InvalidState:
+                        throw new McpException(pex.Message, McpErrorCode.InvalidParams);
+
+                    case TiaMcpServer.Siemens.PortalErrorCode.MultiuserFailed:
+                        {
+                            var reason = pex.InnerException?.Message?.Trim();
+                            var msg = "Failed to read multiuser status.";
+                            if (!string.IsNullOrEmpty(reason)) msg += $" Reason: {reason}";
+                            else if (!string.IsNullOrEmpty(pex.Message)) msg += $" Reason: {pex.Message}";
+
+                            Logger?.LogError(pex, "MCP GetMultiuserStatus failed");
+
+                            throw new McpException(msg, McpErrorCode.InternalError);
+                        }
+                }
+
+                throw new McpException(pex.Message, McpErrorCode.InternalError);
+            }
+            catch (Exception ex) when (ex is not McpException)
+            {
+                throw new McpException($"Unexpected error reading multiuser status: {ex.Message}", ex, McpErrorCode.InternalError);
+            }
+        }
+
         #endregion
 
         #region devices
