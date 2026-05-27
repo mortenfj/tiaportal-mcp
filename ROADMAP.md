@@ -44,9 +44,13 @@ The existing `Au2mate Skills` repository contains Python parsers that today gene
 
 To unlock this epic, the following minor features must be added to the current TiaMcpServer backlog:
 
-- **Multiuser Support Extensions:** Implement a `SyncMultiuserProject` tool to safely pull the latest changes from the Siemens Project Server via Openness before extraction.
+- **Multiuser Support Extensions:** **API constraint discovered:** TIA Portal V20 Openness does not expose an `Update` / `Refresh` / `Sync` method anywhere in `Siemens.Engineering.Multiuser` — the "Update local session" action in the TIA Portal UI is not part of the public API. Instead of automating the pull, we are shipping `GetMultiuserStatus`: a read-only tool that returns `IsUptoDate`, the project's lock state (`IsProjectLocked` + `LockOwner`), and session metadata. The Watchdog adopts a **"skip and alert"** workflow — if the local session is stale, the project is skipped that night and the Lead Engineer is notified to run the update manually from the TIA Portal UI. This is the fail-safe contract for a CI/CD pipeline that cannot guess.
 - **Workspace Lifecycle Management:** Add `OpenProject` and `CloseProject` MCP tools to ensure the server can cycle through multiple projects sequentially without encountering TIA Portal memory leaks or file locks.
 - **Streaming Progress (SSE):** Complete the Server-Sent Events (SSE) pipe so the Python agent can monitor the progress of heavy block exports and handle timeouts gracefully.
+
+## Build & Deployment Notes
+
+- **Openness Whitelist:** Every TiaMcpServer rebuild produces a new `.exe` hash, which causes TIA Portal to throw an interactive security popup on the next Openness attach — fatal for an autonomous Watchdog. After each build, run `scripts/Whitelist-Openness.ps1` **as Administrator** to inject the new SHA256 hash and `DateModified` timestamp into `HKLM:\SOFTWARE\Siemens\Automation\Openness\<version>\Whitelist\TiaMcpServer.exe\Client`, registering the binary for silent attach. The script defaults to the `Debug net48` output path and TIA Portal V20.0; pass `-ExePath` / `-TiaVersion` to target other builds.
 
 ---
 
