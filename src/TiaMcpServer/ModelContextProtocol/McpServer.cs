@@ -266,51 +266,93 @@ namespace TiaMcpServer.ModelContextProtocol
             }
         }
 
-        [McpServerTool(Name = "OpenProject"), Description("Open a TIA-Portal local project/session")]
+        [McpServerTool(Name = "OpenProject"), Description("Open a TIA-Portal local project (.apXX) or session (.alsXX). Pre-closes any currently-open project/session.")]
         public static ResponseOpenProject OpenProject(
-            [Description("path: defines the path where to the project/session")] string path)
+            IProgress<ProgressNotificationValue> progress,
+            [Description("path: full path to the .apXX project or .alsXX session file")] string path,
+            [Description("upgrade: for .apXX only -- allow Openness to migrate an older-version project to the current TIA version. WARNING: this MUTATES the project file on disk. Default false (strict, fail on version mismatch).")] bool upgrade = false)
         {
+            progress.Report(new ProgressNotificationValue
+            {
+                Progress = 5,
+                Total = 100,
+                Message = $"Validating '{path}'..."
+            });
+
             try
             {
-                Portal.CloseProject();
+                var extension = Path.GetExtension(path).ToLowerInvariant();
+                bool isProject = Regex.IsMatch(extension, @"^\.ap\d+$");
+                bool isSession = Regex.IsMatch(extension, @"^\.als\d+$");
 
-                // get project extension
-                string extension = Path.GetExtension(path).ToLowerInvariant();
-
-                // use regex to check if extension is .ap\d+ or .als\d+
-                if (!Regex.IsMatch(extension, @"^\.ap\d+$") &&
-                    !Regex.IsMatch(extension, @"^\.als\d+$"))
+                if (!isProject && !isSession)
                 {
                     throw new McpException("Invalid project file extension. Use .apXX for projects or .alsXX for sessions, where XX=18,19,20,....", McpErrorCode.InvalidParams);
                 }
 
-                bool success = false;
+                progress.Report(new ProgressNotificationValue
+                {
+                    Progress = 20,
+                    Total = 100,
+                    Message = "Closing any currently-open project/session..."
+                });
 
-                if (extension.StartsWith(".ap"))
+                progress.Report(new ProgressNotificationValue
                 {
-                    success = Portal.OpenProject(path);
-                }
-                if (extension.StartsWith(".als"))
-                {
-                    success = Portal.OpenSession(path);
-                }
+                    Progress = 40,
+                    Total = 100,
+                    Message = isProject
+                        ? $"Asking TIA Portal to open project (upgrade={upgrade})..."
+                        : "Asking TIA Portal to open local session..."
+                });
 
-                if (success)
+                var opened = isProject
+                    ? Portal.OpenProject(path, upgrade)
+                    : Portal.OpenSession(path);
+
+                progress.Report(new ProgressNotificationValue
                 {
-                    return new ResponseOpenProject
+                    Progress = 100,
+                    Total = 100,
+                    Message = $"Project '{opened.Name}' opened"
+                });
+
+                return new ResponseOpenProject
+                {
+                    Message = $"Project '{opened.Name}' opened from '{path}'",
+                    Meta = new JsonObject
                     {
-                        Message = $"Project '{path}' opened",
-                        Meta = new JsonObject
-                        {
-                            ["timestamp"] = DateTime.Now,
-                            ["success"] = true
-                        }
-                    };
-                }
-                else
+                        ["timestamp"] = DateTime.Now,
+                        ["success"] = true,
+                        ["projectName"] = opened.Name,
+                        ["projectPath"] = opened.Path?.ToString() ?? path,
+                        ["isLocalSession"] = isSession,
+                        ["upgraded"] = isProject && upgrade
+                    }
+                };
+            }
+            catch (TiaMcpServer.Siemens.PortalException pex)
+            {
+                switch (pex.Code)
                 {
-                    throw new McpException($"Failed to open project '{path}'", McpErrorCode.InternalError);
+                    case TiaMcpServer.Siemens.PortalErrorCode.InvalidParams:
+                    case TiaMcpServer.Siemens.PortalErrorCode.InvalidState:
+                        throw new McpException(pex.Message, McpErrorCode.InvalidParams);
+
+                    case TiaMcpServer.Siemens.PortalErrorCode.OpenFailed:
+                        {
+                            var reason = pex.InnerException?.Message?.Trim();
+                            var msg = "Failed to open project.";
+                            if (!string.IsNullOrEmpty(reason)) msg += $" Reason: {reason}";
+                            else if (!string.IsNullOrEmpty(pex.Message)) msg += $" Reason: {pex.Message}";
+
+                            Logger?.LogError(pex, "MCP OpenProject failed for {Path}", pex.Data?["projectPath"]);
+
+                            throw new McpException(msg, McpErrorCode.InternalError);
+                        }
                 }
+
+                throw new McpException(pex.Message, McpErrorCode.InternalError);
             }
             catch (Exception ex) when (ex is not McpException)
             {
@@ -405,58 +447,59 @@ namespace TiaMcpServer.ModelContextProtocol
             }
         }
 
-        [McpServerTool(Name = "CloseProject"), Description("Close the current TIA-Portal project/session")]
-        public static ResponseCloseProject CloseProject()
+        [McpServerTool(Name = "CloseProject"), Description("Close the current TIA-Portal local project or session. Returns InvalidParams if nothing is open.")]
+        public static ResponseCloseProject CloseProject(
+            [Description("save: save the project before closing. Default false -- closing discards unsaved changes.")] bool save = false)
         {
             try
             {
-                bool success;
-
-                if (Portal.IsLocalSession)
+                bool wasSession = Portal.IsLocalSession;
+                if (wasSession)
                 {
-                    success = Portal.CloseSession();
-                    if (success)
-                    {
-                        return new ResponseCloseProject
-                        {
-                            Message = "Local session closed",
-                            Meta = new JsonObject
-                            {
-                                ["timestamp"] = DateTime.Now,
-                                ["success"] = true
-                            }
-                        };
-                    }
-                    else
-                    {
-                        throw new McpException("Failed closing local session", McpErrorCode.InternalError);
-                    }
+                    Portal.CloseSession(save);
                 }
                 else
                 {
-                    success = Portal.CloseProject();
-                    if (success)
-                    {
-                        return new ResponseCloseProject
-                        {
-                            Message = "Local project closed",
-                            Meta = new JsonObject
-                            {
-                                ["timestamp"] = DateTime.Now,
-                                ["success"] = true
-                            }
-                        };
-                    }
-                    else
-                    {
-                        throw new McpException("Failed closing project", McpErrorCode.InternalError);
-                    }
+                    Portal.CloseProject(save);
                 }
 
+                return new ResponseCloseProject
+                {
+                    Message = wasSession ? "Local session closed" : "Local project closed",
+                    Meta = new JsonObject
+                    {
+                        ["timestamp"] = DateTime.Now,
+                        ["success"] = true,
+                        ["wasLocalSession"] = wasSession,
+                        ["saved"] = save
+                    }
+                };
+            }
+            catch (TiaMcpServer.Siemens.PortalException pex)
+            {
+                switch (pex.Code)
+                {
+                    case TiaMcpServer.Siemens.PortalErrorCode.InvalidState:
+                        throw new McpException(pex.Message, McpErrorCode.InvalidParams);
+
+                    case TiaMcpServer.Siemens.PortalErrorCode.CloseFailed:
+                        {
+                            var reason = pex.InnerException?.Message?.Trim();
+                            var msg = "Failed to close project.";
+                            if (!string.IsNullOrEmpty(reason)) msg += $" Reason: {reason}";
+                            else if (!string.IsNullOrEmpty(pex.Message)) msg += $" Reason: {pex.Message}";
+
+                            Logger?.LogError(pex, "MCP CloseProject failed");
+
+                            throw new McpException(msg, McpErrorCode.InternalError);
+                        }
+                }
+
+                throw new McpException(pex.Message, McpErrorCode.InternalError);
             }
             catch (Exception ex) when (ex is not McpException)
             {
-                throw new McpException($"Unexpected error closing local project/session: {ex.Message}", ex, McpErrorCode.InternalError);
+                throw new McpException($"Unexpected error closing project: {ex.Message}", ex, McpErrorCode.InternalError);
             }
         }
 
