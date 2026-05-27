@@ -32,6 +32,14 @@ When the scheduler triggers the Watchdog at midnight, it executes the following 
    - Highlight critical safety risks (e.g., an `EventsTester` block overwriting global buffer slots).
 5. **Commit & Alert:** The AI generates a structured commit message. The agent pushes the code to the Git server and, if critical flaws were detected, fires an alert (via Teams/Email) to the Lead Engineer detailing the exact lines of non-compliant code.
 
+## Epic 2: "Docs-to-Code" Reconciliation (Integrating Au2mate Skills)
+
+The existing `Au2mate Skills` repository contains Python parsers that today generate SCADA Excel sheets from FDS Word documents in an offline, batch fashion. With the live HTTP MCP gateway in place, those parsers stop being one-shot generators and become continuous reconciliation agents bridging documentation and live PLC code.
+
+- **Live UDT Fetching:** Upgrade the existing `Setpoints txt` skill to bypass manual TIA Portal exports. The Python script will use the HTTP MCP bridge to dynamically fetch live UDT structures and Tag Tables directly from the active engineering session.
+- **Continuous FDS Auditing:** Integrate `parse_fds.py` into the Nightly Watchdog. The Watchdog will parse the state machines and alarms from the Word documents and cross-reference them against the live PLC code extracted via MCP, automatically flagging "Silent Drift" (e.g., an alarm required by the FDS but missing in the PLC).
+- **Direct SCADA Injection:** Phase out the intermediate `.xls` generation. Build new MCP "Write" tools allowing the AI to inject StatusTxt and AlarmTxt strings directly into the TIA Portal Text Lists based on the parsed FDS.
+
 ## Roadmap Prerequisites (What we need to build next)
 
 To unlock this epic, the following minor features must be added to the current TiaMcpServer backlog:
