@@ -1246,51 +1246,59 @@ namespace TiaMcpServer.Siemens
             }
         }
 
-        public bool ImportBlock(string softwarePath, string groupPath, string importPath)
+        public IList<PlcBlock> ImportBlock(string softwarePath, string groupPath, string importPath, bool overwrite = false)
         {
-            _logger?.LogInformation($"Importing block from path: {importPath}");
+            _logger?.LogInformation($"Importing block from {importPath} into {groupPath} (overwrite={overwrite})");
 
-            if (IsProjectNull())
+            try
             {
-                return false;
-            }
-
-            var softwareContainer = GetSoftwareContainer(softwarePath);
-            if (softwareContainer?.Software is PlcSoftware plcSoftware)
-            {
-                var blockGroup = plcSoftware?.BlockGroup;
-
-                if (blockGroup != null)
+                if (IsProjectNull())
                 {
-
-                    var group = GetPlcBlockGroupByPath(softwarePath, groupPath);
-                    if (group == null)
-                    {
-                        return false;
-                    }
-
-                    try
-                    {
-                        // Correct the argument type by using FileInfo instead of FileStream  
-                        var fileInfo = new FileInfo(importPath);
-                        if (fileInfo.Exists)
-                        {
-                            var list = group.Blocks.Import(fileInfo, ImportOptions.Override);
-                            if (list != null && list.Count > 0)
-                            {
-                                return true;
-                            }
-                        }
-
-                    }
-                    catch (Exception)
-                    {
-                        return false;
-                    }
+                    throw new PortalException(PortalErrorCode.InvalidState, "No project is open in TIA Portal");
                 }
-            }
 
-            return false;
+                var softwareContainer = GetSoftwareContainer(softwarePath);
+                if (softwareContainer?.Software is not PlcSoftware)
+                {
+                    throw new PortalException(PortalErrorCode.NotFound, $"PLC software not found at '{softwarePath}'");
+                }
+
+                var group = GetPlcBlockGroupByPath(softwarePath, groupPath);
+                if (group == null)
+                {
+                    throw new PortalException(PortalErrorCode.NotFound, $"Block group not found at '{groupPath}'");
+                }
+
+                var fileInfo = new FileInfo(importPath);
+                if (!fileInfo.Exists)
+                {
+                    throw new PortalException(PortalErrorCode.InvalidParams, $"Import file does not exist: '{importPath}'");
+                }
+
+                var options = overwrite ? ImportOptions.Override : ImportOptions.None;
+                var imported = group.Blocks.Import(fileInfo, options);
+                if (imported == null || imported.Count == 0)
+                {
+                    throw new PortalException(PortalErrorCode.ImportFailed,
+                        "Openness Import returned no blocks (file may be empty, malformed, or a name collision occurred with overwrite=false)");
+                }
+
+                return imported;
+            }
+            catch (Exception ex)
+            {
+                // If the exception is already a PortalException, use it; otherwise wrap as ImportFailed.
+                var pex = ex as PortalException ?? new PortalException(PortalErrorCode.ImportFailed, "Import failed", null, ex);
+
+                pex.Data["softwarePath"] = softwarePath;
+                pex.Data["groupPath"] = groupPath;
+                pex.Data["importPath"] = importPath;
+                pex.Data["overwrite"] = overwrite;
+
+                _logger?.LogError(pex, "ImportBlock failed for {SoftwarePath} {GroupPath} <- {ImportPath} (overwrite={Overwrite})",
+                    softwarePath, groupPath, importPath, overwrite);
+                throw pex;
+            }
         }
 
         public bool ImportType(string softwarePath, string groupPath, string importPath)

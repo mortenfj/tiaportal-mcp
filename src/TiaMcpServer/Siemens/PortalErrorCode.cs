@@ -4,6 +4,7 @@ namespace TiaMcpServer.Siemens
     {
         NotFound,
         ExportFailed,
+        ImportFailed,
         InvalidParams,
         InvalidState
     }

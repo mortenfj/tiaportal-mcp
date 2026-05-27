@@ -1196,30 +1196,85 @@ namespace TiaMcpServer.ModelContextProtocol
             }
         }
 
-        [McpServerTool(Name = "ImportBlock"), Description("Import a block file to plc software")]
+        [McpServerTool(Name = "ImportBlock"), Description("Import a block from an XML file into plc software")]
         public static ResponseImportBlock ImportBlock(
+            IProgress<ProgressNotificationValue> progress,
             [Description("softwarePath: defines the path in the project structure to the plc software")] string softwarePath,
             [Description("groupPath: defines the path in the project structure to the group, where to import the block")] string groupPath,
-            [Description("importPath: defines the path of the xml file from where to import the block")] string importPath)
+            [Description("importPath: defines the path of the xml file from where to import the block")] string importPath,
+            [Description("overwrite: replace existing block(s) with the same name (default false: fail on name collision)")] bool overwrite = false)
         {
+            progress.Report(new ProgressNotificationValue
+            {
+                Progress = 10,
+                Total = 100,
+                Message = $"Starting import from '{importPath}' into '{groupPath}'..."
+            });
+
             try
             {
-                if (Portal.ImportBlock(softwarePath, groupPath, importPath))
+                progress.Report(new ProgressNotificationValue
                 {
-                    return new ResponseImportBlock
+                    Progress = 40,
+                    Total = 100,
+                    Message = "Validating file and resolving target group..."
+                });
+
+                progress.Report(new ProgressNotificationValue
+                {
+                    Progress = 70,
+                    Total = 100,
+                    Message = $"Calling TIA Portal Openness Import (overwrite={overwrite})..."
+                });
+
+                var imported = Portal.ImportBlock(softwarePath, groupPath, importPath, overwrite);
+
+                progress.Report(new ProgressNotificationValue
+                {
+                    Progress = 100,
+                    Total = 100,
+                    Message = $"Imported {imported.Count} block(s) into '{groupPath}'"
+                });
+
+                return new ResponseImportBlock
+                {
+                    Message = $"Imported {imported.Count} block(s) from '{importPath}' into '{groupPath}'",
+                    Meta = new JsonObject
                     {
-                        Message = $"Block imported from '{importPath}' to '{groupPath}'",
-                        Meta = new JsonObject
-                        {
-                            ["timestamp"] = DateTime.Now,
-                            ["success"] = true
-                        }
-                    };
-                }
-                else
+                        ["timestamp"] = DateTime.Now,
+                        ["success"] = true,
+                        ["importedCount"] = imported.Count,
+                        ["importedNames"] = new JsonArray(imported.Select(b => (JsonNode?)JsonValue.Create(b.Name)).ToArray()),
+                        ["overwrite"] = overwrite
+                    }
+                };
+            }
+            catch (TiaMcpServer.Siemens.PortalException pex)
+            {
+                switch (pex.Code)
                 {
-                    throw new McpException($"Failed importing block from '{importPath}' to '{groupPath}'", McpErrorCode.InternalError);
+                    case TiaMcpServer.Siemens.PortalErrorCode.NotFound:
+                        throw new McpException(pex.Message, McpErrorCode.InvalidParams);
+
+                    case TiaMcpServer.Siemens.PortalErrorCode.InvalidParams:
+                    case TiaMcpServer.Siemens.PortalErrorCode.InvalidState:
+                        throw new McpException(pex.Message, McpErrorCode.InvalidParams);
+
+                    case TiaMcpServer.Siemens.PortalErrorCode.ImportFailed:
+                        {
+                            var reason = pex.InnerException?.Message?.Trim();
+                            var msg = "Failed to import block.";
+                            if (!string.IsNullOrEmpty(reason)) msg += $" Reason: {reason}";
+                            else if (!string.IsNullOrEmpty(pex.Message)) msg += $" Reason: {pex.Message}";
+
+                            Logger?.LogError(pex, "MCP ImportBlock failed for {SoftwarePath} {GroupPath} <- {ImportPath}",
+                                pex.Data?["softwarePath"], pex.Data?["groupPath"], pex.Data?["importPath"]);
+
+                            throw new McpException(msg, McpErrorCode.InternalError);
+                        }
                 }
+
+                throw new McpException(pex.Message, McpErrorCode.InternalError);
             }
             catch (Exception ex) when (ex is not McpException)
             {
